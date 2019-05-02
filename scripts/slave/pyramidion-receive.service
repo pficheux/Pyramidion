@@ -1,0 +1,18 @@
+[Unit]
+Description=Pyramidion receiver service
+After=network.target
+
+[Service]
+ExecStart=/home/pi/pyramidion-receive.sh
+WorkingDirectory=/home/pi
+# Mode trace
+#StandardOutput=syslog
+#StandardError=syslog
+StandardOutput=null
+StandardError=null
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
+

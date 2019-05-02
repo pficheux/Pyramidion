@@ -1,0 +1,9 @@
+# Format = min heure jour-du-mois mois jour-semaine
+#
+# exemples: 
+#
+# 0 8 * * * -> tous les jours a 8h
+# 0 * * * * -> tous les heures
+#
+00 19 * * * sudo ~pi/pyramidion-gpio-start.sh
+00 01 * * * sudo ~pi/pyramidion-gpio-stop.sh
