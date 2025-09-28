@@ -278,7 +278,7 @@ int gpio_fd_close(int fd)
 void usage (void)
 {
 #ifdef USE_MOSQUITTO
-  printf("\t-i <gpio-in-pin>\n\t-o <gpio-out-pin> \n\t-h <mqtt_host>\n\t-t <mqtt_topic> \n\t-v verbose \n\t-t <poll-timeout>\n\t-w <time> (wait 'time' before sending bpm)\n\n");
+  printf("\t-i <gpio-in-pin>\n\t-o <gpio-out-pin> \n\t-h <mqtt_host>\n\t-T <mqtt_topic> \n\t-v verbose \n\t-t <poll-timeout>\n\t-w <time> (wait 'time' before sending bpm)\n\n");
 #else  
   printf("\t-i <gpio-in-pin>\n\t-o <gpio-out-pin> \n\t-v verbose \n\t-t <poll-timeout>\n\t-w <time> (wait 'time' before sending bpm)\n\n");
 #endif
@@ -292,6 +292,7 @@ void *threadfunc(void *parm)
   struct timespec ts;
   unsigned int v_out = 0;
   unsigned long period;
+  
   int bpm = (int)parm;
 
   if (verbose)
@@ -359,7 +360,7 @@ int main(int ac, char **av)
 	break;
 
 #ifdef USE_MOSQUITTO	
-      case 't' :
+      case 'T' :
 	mqtt_topic = *++av;
 	break;
 #endif	
@@ -403,7 +404,7 @@ int main(int ac, char **av)
 
 #ifdef USE_MOSQUITTO
   mqtt_setup();
-  sprintf (buf, "%d", 30000/period);
+  sprintf (buf, "%d", 30000/timeout);
   mqtt_err = mqtt_send (buf);
   if (mqtt_err != 0) 
     fprintf(stderr, "mqtt_send error= %d\n", mqtt_err);
