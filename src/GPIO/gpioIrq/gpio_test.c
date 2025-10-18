@@ -8,107 +8,23 @@
 #include <signal.h>
 #include <time.h>
 #include <pthread.h>
-#ifdef USE_MOSQUITTO
-#include <mosquitto.h>
-#endif
 
 /****************************************************************
  * Constants
  ****************************************************************/
 
 #define SYSFS_GPIO_DIR "/sys/class/gpio"
-
-
-#define POLL_TIMEOUT 1000 /* 30 bpm = 60000/2/timeout */
-#define MIN_POLL_TIMEOUT 100
-#define MAX_POLL_TIMEOUT 2000
-#define TIMEOUT_INC      100
 #define MAX_BUF 64
-
+#define POLL_TIMEOUT (1000) /* 30 bpm = 60000/2/timeout */
 
 
 /* global variables */
 int gpio_out = 0;
 int gpio_btn = 0;
 int count_in = 0;
-time_t t_start, t_cur, t_btn, t_btn_old;
-int bpm, bpm_temp;
 int verbose;
 
-pthread_t sensor_thread;
-
-#ifdef USE_MOSQUITTO
-
-/************
- * MQTT
- ************/
-
-struct mosquitto *mosq = NULL;
-char *topic = NULL;
-char *mqtt_host = NULL;
-char *mqtt_topic = NULL;
-
-void mosq_log_callback(struct mosquitto *mosq, void *userdata, int level, const char *str)
-{
-  /* Pring all log messages regardless of level. */
-  
-  switch(level){
-    //case MOSQ_LOG_DEBUG:
-    //case MOSQ_LOG_INFO:
-    //case MOSQ_LOG_NOTICE:
-  case MOSQ_LOG_WARNING:
-  case MOSQ_LOG_ERR: {
-    printf("%i:%s\n", level, str);
-  }
-  }
-}
-
-void mqtt_setup()
-{
-  int port = 1883;
-  int keepalive = 60;
-  bool clean_session = true;
-
-  if (!mqtt_host || !mqtt_topic) 
-    return;
-  
-  mosquitto_lib_init();
-  mosq = mosquitto_new(NULL, clean_session, NULL);
-  if(!mosq){
-    fprintf(stderr, "Error: Out of memory.\n");
-    mqtt_host = 0;
-    return;
-    //    exit(1);
-  }
-  
-  mosquitto_log_callback_set(mosq, mosq_log_callback);
-  
-  if(mosquitto_connect(mosq, mqtt_host, port, keepalive)){
-    fprintf(stderr, "Unable to connect.\n");
-    mqtt_host = 0;
-    return;
-    //    exit(1);
-  }
-
-  int loop = mosquitto_loop_start(mosq);
-
-  if(loop != MOSQ_ERR_SUCCESS){
-    fprintf(stderr, "Unable to start loop: %i\n", loop);
-    mqtt_host = 0;
-    return;
-    //    exit(1);
-  }
-}
-
-int mqtt_send(char *msg)
-{
-  if (!mqtt_host || !mqtt_topic) 
-    return 0;
-
-  return mosquitto_publish(mosq, NULL, mqtt_topic, strlen(msg), msg, 0, 0);
-}
-
-#endif /* USE_MOSQUITTO */
+// GPIO
 
 /****************************************************************
  * gpio_export
@@ -286,38 +202,12 @@ int gpio_fd_close(int fd)
 void usage (void)
 {
 #ifdef USE_MOSQUITTO
-  printf("\t-i <gpio-in-pin>\n\t-o <gpio-out-pin> \n\t-b <btn-pin>\n\t-h <mqtt_host>\n\t-T <mqtt_topic> \n\t-v verbose \n\t-t <poll-timeout>\n\t-w <time> (wait 'time' before sending bpm)\n\n");
+  printf("\t-i <gpio-in-pin>\n\t-o <gpio-out-pin> \n\t-h <mqtt_host>\n\t-T <mqtt_topic> \n\t-v verbose \n\t-t <poll-timeout>\n\t-w <time> (wait 'time' before sending bpm)\n\n");
 #else  
-  printf("\t-i <gpio-in-pin>\n\t-o <gpio-out-pin> \n\t-b <btn-pin>\n\t-v verbose \n\t-t <poll-timeout>\n\t-w <time> (wait 'time' before sending bpm)\n\n");
+  printf("\t-i <gpio-in-pin>\n\t-o <gpio-out-pin> \n\t-v verbose \n\t-t <poll-timeout>\n\t\n\n");
 #endif
   
   exit (1);
-}
-
-// thread for blinking (bpm)
-void *threadfunc(void *parm)
-{
-  struct timespec ts;
-  unsigned int v_out = 0;
-  unsigned long period;
-  
-  int bpm = (int)parm;
-
-  if (verbose)
-    printf (">> Thread started, bpm= %d\n", bpm);
-
-  // period in ns
-  period = (60000 / bpm / 2) * 1000000;
-  ts.tv_sec = period / 1000000000;
-  ts.tv_nsec = period % 1000000000;
-
-  while (1) {
-    // Change gpio out state
-    gpio_set_value (gpio_out, v_out);
-    v_out = (v_out == 0 ? 1 : 0);
-
-    clock_nanosleep (CLOCK_MONOTONIC, 0, &ts, NULL);
-  }
 }
 
 // signal handler
@@ -343,11 +233,9 @@ int main(int ac, char **av)
   unsigned int gpio = 0;
   int len;
   int val;
-  int mqtt_err;
   unsigned int v_out = 0;
-  int wait_time = 10, exit_v = 0;
-  int skip_btn_event = 1, timeout_inc = TIMEOUT_INC;
-  
+  int exit_v = 0;
+
   timeout = POLL_TIMEOUT;
 
   while (--ac) {
@@ -382,10 +270,6 @@ int main(int ac, char **av)
 	timeout = atoi(*++av);
 	break;
 
-      case 'w' :
-	wait_time = atoi(*++av);
-	break;
-
       case 'v' :
 	verbose = 1; break;
 
@@ -416,7 +300,6 @@ int main(int ac, char **av)
   if (gpio_btn) {
     gpio_export(gpio_btn);
     gpio_set_dir(gpio_btn, 0);
-    gpio_set_edge(gpio_btn, "falling");
     gpio_btn_fd = gpio_fd_open(gpio_btn);
     printf ("fd= %d\n", gpio_btn_fd);
   }
@@ -424,16 +307,7 @@ int main(int ac, char **av)
   signal (SIGINT, got_exit);
   signal (SIGTERM, got_exit);
 
-#ifdef USE_MOSQUITTO
-  mqtt_setup();
-  sprintf (buf, "%d", 30000/timeout);
-  mqtt_err = mqtt_send (buf);
-  if (mqtt_err != 0) 
-    fprintf(stderr, "mqtt_send error= %d\n", mqtt_err);
-#endif
-
-  if (verbose)
-    printf ("default blinking= %d bpm\n", 30000/timeout);
+  printf ("default blinking= %d bpm\n", 30000/timeout);
   
   while (1) {
     memset((void*)fdset, 0, sizeof(fdset));
@@ -450,40 +324,11 @@ int main(int ac, char **av)
 
     if (rc < 0) {
       fprintf(stderr, "\n** Warning: poll() failed !\n");
-      //      exit_v = 1;
-      //      goto the_end;
-#ifdef USE_MOSQUITTO      
-      //      mqtt_err = mqtt_send ("30");
-      //      if (mqtt_err != 0) 
-      //         fprintf(stderr, "mqtt_send error= %d\n", mqtt_err);
-      //      return -1;
-#endif      
-    }
+      }
 
     // timeout -> default blinking
     if (rc == 0) {
       int r;
-
-      // default blinking
-      if (bpm) {
-	void *status;
-#ifdef USE_MOSQUITTO	
-        mqtt_send ("30");
-#endif
-	//  Stop current thread
-	if (verbose)
-	  printf (">> Cancelling thread\n");
-	r = pthread_cancel(sensor_thread);
-	if (verbose)
-	  printf (">> pthread_cancel = %d\n", r);
-	pthread_join(sensor_thread, &status);
-	if (verbose)
-	  printf (">> Thread cancelled !!\n");
-      }
-
-      bpm = bpm_temp = 0;
-      count_in = 0;
-      t_start = t_cur = 0;
 
       if (verbose)
 	printf(".");
@@ -497,69 +342,12 @@ int main(int ac, char **av)
 	lseek(fdset[0].fd, 0, SEEK_SET);
 	len = read(fdset[0].fd, buf, MAX_BUF);
 
-	if (t_start == 0)
-	  t_start = time(0);
-	t_cur = time(0);
-      
-	count_in++;
-      
-	// bpm == 0 -> We need to get it !
-	if (bpm == 0) {
-	  // led off during calculation
-	  gpio_set_value (gpio_out, 0);
-	  // Wait some seconds (default is 10) before sending bpm because of sensor quality, then create the thread
-	  if (t_cur - t_start >= wait_time) {
-	    bpm = bpm_temp;
-	    if (verbose)
-	      printf (">>> final bpm = %d\n", bpm);
-#ifdef USE_MOSQUITTO	  
-	    sprintf (mqtt_msg, "%d", bpm);
-	    mqtt_err = mqtt_send(mqtt_msg);
-	    if (mqtt_err != 0) 
-	      fprintf(stderr, "mqtt_send error= %d\n", mqtt_err);
-#endif
-	    // Create sensor thread with bpm value
-	    if (pthread_create(&sensor_thread, NULL, threadfunc, (void *)bpm) < 0)
-	      perror ("pthread_create");
-	  }
-	  else {
-	    // get the bpm for the current interval
-	    bpm_temp = (int)(30 * (double)count_in / (double)(t_cur - t_start));
-	    if (verbose && (t_cur > t_start))
-	      printf (">>> current bpm after %d seconds and %d event(s) = %d\n", t_cur-t_start, count_in, bpm_temp);
-	  }
-	}
-	// we have bpm already
-	else {
-	  bpm_temp = 0;
-	  //        if (verbose)
-	  //	  printf (">>> thread is running, current bpm = %d\n", bpm);
-	}
+	printf ("len= %d on fdset 0\n", len);
       }
       else if (fdset[1].revents & POLLPRI) {
 	lseek(fdset[1].fd, 0, SEEK_SET);
 	len = read(fdset[1].fd, buf, MAX_BUF);
-
-	if (t_btn)
-	  t_btn_old = t_btn;
-	
-	t_btn = time(0);
-
-	if (t_btn - t_btn_old < 2 || skip_btn_event) {
-	  //	  printf ("skipping btn event %d\n", t_btn-t_btn_old);
-	  skip_btn_event = 0;
-	}
-	else {
-	  if (timeout == MIN_POLL_TIMEOUT)
-	      timeout = MAX_POLL_TIMEOUT;
-	  else if (timeout == MAX_POLL_TIMEOUT)
-	      timeout = MIN_POLL_TIMEOUT;
-
-	  timeout -= 100;
-
-	  if (verbose)
-	    printf ("new timeout= %d\n", timeout);
-	}
+	printf ("len= %d on fdset 1\n", len);
       }
     }
 
@@ -569,13 +357,7 @@ int main(int ac, char **av)
  the_end:
   gpio_fd_close(gpio_fd);
   if (gpio_btn)
-    gpio_fd_close (gpio_btn_fd);
+    gpio_fd_close(gpio_btn_fd);
   
-#ifdef USE_MOSQUITTO  
-  mqtt_err = mqtt_send ("30");
-  if (mqtt_err != 0) 
-    fprintf(stderr, "mqtt_send error= %d\n", mqtt_err);
-#endif
-
   return exit_v;
 }

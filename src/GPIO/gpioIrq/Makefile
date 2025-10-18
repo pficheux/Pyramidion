@@ -1,11 +1,11 @@
-CFLAGS= -O2 # -Wall
+CFLAGS= -O2  #-DUSE_MOSQUITTO # -Wall
 
-PROGS= gpioIrq
+PROGS= gpioIrq gpio_test
 
 all: $(PROGS)
 
 .c:
-	$(CC) $(CFLAGS) -o $@ $<  -lmosquitto -lpthread
+	$(CC) $(CFLAGS) -o $@ $<  -lpthread # -lmosquitto
 
 clean:
 	rm -f *~  $(PROGS)
