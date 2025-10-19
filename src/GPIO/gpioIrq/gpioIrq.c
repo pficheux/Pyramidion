@@ -18,21 +18,19 @@
 
 #define SYSFS_GPIO_DIR "/sys/class/gpio"
 
+#define DEFAULT_BPM_IDLE   30 /* bpm = 60000 / 2 / timeout */
+#define MIN_BPM_IDLE       20
+#define MAX_BPM_IDLE       200
+#define BPM_IDLE_INC       5   /* press the button -> bpm_idle +/- 5 bpm */
 
-#define POLL_TIMEOUT 1000 /* 30 bpm = 60000/2/timeout */
-#define MIN_POLL_TIMEOUT 100
-#define MAX_POLL_TIMEOUT 1500
-#define TIMEOUT_INC      -50
 #define MAX_BUF 64
-
-
 
 /* global variables */
 int gpio_out = 0;
 int gpio_btn = 0;
 int count_in = 0;
 time_t t_start, t_cur, t_btn, t_btn_old;
-int bpm, bpm_temp;
+int bpm, bpm_idle, bpm_temp;
 int verbose;
 
 pthread_t sensor_thread;
@@ -156,10 +154,10 @@ int gpio_unexport(unsigned int gpio)
  ****************************************************************/
 int gpio_set_dir(unsigned int gpio, unsigned int out_flag)
 {
-  int fd, len;
+  int fd;
   char buf[MAX_BUF];
 
-  len = snprintf(buf, sizeof(buf), SYSFS_GPIO_DIR  "/gpio%d/direction", gpio);
+  snprintf(buf, sizeof(buf), SYSFS_GPIO_DIR  "/gpio%d/direction", gpio);
 
   fd = open(buf, O_WRONLY);
   if (fd < 0) {
@@ -181,13 +179,13 @@ int gpio_set_dir(unsigned int gpio, unsigned int out_flag)
  ****************************************************************/
 int gpio_set_value(unsigned int gpio, unsigned int value)
 {
-  int fd, len;
+  int fd;
   char buf[MAX_BUF];
 
   if (!gpio)
     return 0;
 
-  len = snprintf(buf, sizeof(buf), SYSFS_GPIO_DIR "/gpio%d/value", gpio);
+  snprintf(buf, sizeof(buf), SYSFS_GPIO_DIR "/gpio%d/value", gpio);
 
   fd = open(buf, O_WRONLY);
   if (fd < 0) {
@@ -209,11 +207,11 @@ int gpio_set_value(unsigned int gpio, unsigned int value)
  ****************************************************************/
 int gpio_get_value(unsigned int gpio, unsigned int *value)
 {
-  int fd, len;
+  int fd;
   char buf[MAX_BUF];
   char ch;
 
-  len = snprintf(buf, sizeof(buf), SYSFS_GPIO_DIR "/gpio%d/value", gpio);
+  snprintf(buf, sizeof(buf), SYSFS_GPIO_DIR "/gpio%d/value", gpio);
 
   fd = open(buf, O_RDONLY);
   if (fd < 0) {
@@ -240,10 +238,10 @@ int gpio_get_value(unsigned int gpio, unsigned int *value)
 
 int gpio_set_edge(unsigned int gpio, char *edge)
 {
-  int fd, len;
+  int fd;
   char buf[MAX_BUF];
 
-  len = snprintf(buf, sizeof(buf), SYSFS_GPIO_DIR "/gpio%d/edge", gpio);
+  snprintf(buf, sizeof(buf), SYSFS_GPIO_DIR "/gpio%d/edge", gpio);
 
   fd = open(buf, O_WRONLY);
   if (fd < 0) {
@@ -262,10 +260,10 @@ int gpio_set_edge(unsigned int gpio, char *edge)
 
 int gpio_fd_open(unsigned int gpio)
 {
-  int fd, len;
+  int fd;
   char buf[MAX_BUF];
 
-  len = snprintf(buf, sizeof(buf), SYSFS_GPIO_DIR "/gpio%d/value", gpio);
+  snprintf(buf, sizeof(buf), SYSFS_GPIO_DIR "/gpio%d/value", gpio);
 
   fd = open(buf, O_RDONLY | O_NONBLOCK );
   if (fd < 0) {
@@ -286,9 +284,9 @@ int gpio_fd_close(int fd)
 void usage (void)
 {
 #ifdef USE_MOSQUITTO
-  printf("\t-i <gpio-in-pin>\n\t-o <gpio-out-pin> \n\t-b <btn-pin>\n\t-h <mqtt_host>\n\t-T <mqtt_topic> \n\t-v verbose \n\t-t <poll-timeout>\n\t-w <time> (wait 'time' before sending bpm)\n\n");
+  printf("\t-i <gpio-in-pin>\n\t-o <gpio-out-pin> \n\t-g <btn-gpio>\n\t-h <mqtt_host>\n\t-T <mqtt_topic> \n\t-v verbose \n\t-b <idle-bpm>\n\t-w <time> (wait 'time' before sending bpm)\n\n");
 #else  
-  printf("\t-i <gpio-in-pin>\n\t-o <gpio-out-pin> \n\t-b <btn-pin>\n\t-v verbose \n\t-t <poll-timeout>\n\t-w <time> (wait 'time' before sending bpm)\n\n");
+  printf("\t-i <gpio-in-pin>\n\t-o <gpio-out-pin> \n\t-g <btn-gpio>\n\t-v verbose \n\t-b <idle-bpm>\n\t-w <time> (wait 'time' before sending bpm)\n\n");
 #endif
   
   exit (1);
@@ -339,17 +337,20 @@ int main(int ac, char **av)
   struct pollfd fdset[2];
   int nfds = 2;
   int gpio_fd, gpio_btn_fd, timeout, rc;
-  char buf[MAX_BUF], *cp, mqtt_msg[MAX_BUF];
+  char buf[MAX_BUF], *cp;
   unsigned int gpio = 0;
-  int len;
-  int val;
-  int mqtt_err;
   unsigned int v_out = 0;
   int wait_time = 10, exit_v = 0;
-  int skip_btn_event = 1, timeout_inc = TIMEOUT_INC;
-  
-  timeout = POLL_TIMEOUT;
+  int skip_btn_event = 1;
+  int bpm_inc = BPM_IDLE_INC;
+#ifdef USE_MOSQUITTO  
+  int mqtt_err;
+  char mqtt_msg[MAX_BUF];
+#endif  
 
+  
+  bpm_idle = DEFAULT_BPM_IDLE;
+  
   while (--ac) {
     if ((cp = *++av) == NULL)
       break;
@@ -364,7 +365,7 @@ int main(int ac, char **av)
 	gpio = atoi(*++av);
 	break;
 
-      case 'b' :
+      case 'g' :
 	gpio_btn = atoi(*++av);
 	break;
 	
@@ -378,8 +379,8 @@ int main(int ac, char **av)
 	break;
 #endif	
 
-      case 't' :
-	timeout = atoi(*++av);
+      case 'b' :
+	bpm_idle = atoi(*++av);
 	break;
 
       case 'w' :
@@ -400,6 +401,8 @@ int main(int ac, char **av)
   if (!gpio || !gpio_out)
     usage();
 
+  timeout = 30000 / bpm_idle;
+  
   // GPIO in
   gpio_export(gpio);
   gpio_set_dir(gpio, 0);
@@ -418,7 +421,6 @@ int main(int ac, char **av)
     gpio_set_dir(gpio_btn, 0);
     gpio_set_edge(gpio_btn, "falling");
     gpio_btn_fd = gpio_fd_open(gpio_btn);
-    printf ("fd= %d\n", gpio_btn_fd);
   }
 
   signal (SIGINT, got_exit);
@@ -426,14 +428,14 @@ int main(int ac, char **av)
 
 #ifdef USE_MOSQUITTO
   mqtt_setup();
-  sprintf (buf, "%d", 30000/timeout);
+  sprintf (buf, "%d", bpm_idle);
   mqtt_err = mqtt_send (buf);
   if (mqtt_err != 0) 
     fprintf(stderr, "mqtt_send error= %d\n", mqtt_err);
 #endif
 
   if (verbose)
-    printf ("default blinking= %d bpm\n", 30000/timeout);
+    printf ("default blinking= %d bpm\n", bpm_idle);
   
   while (1) {
     memset((void*)fdset, 0, sizeof(fdset));
@@ -495,13 +497,14 @@ int main(int ac, char **av)
     else {
       if (fdset[0].revents & POLLPRI) {
 	lseek(fdset[0].fd, 0, SEEK_SET);
-	len = read(fdset[0].fd, buf, MAX_BUF);
+	if (read(fdset[0].fd, buf, MAX_BUF) < 0)
+	  perror ("read / GPIO-in");
 
+	// Start counting time and events
 	if (t_start == 0)
 	  t_start = time(0);
 	t_cur = time(0);
-      
-	count_in++;
+      	count_in++;
       
 	// bpm == 0 -> We need to get it !
 	if (bpm == 0) {
@@ -526,7 +529,7 @@ int main(int ac, char **av)
 	    // get the bpm for the current interval
 	    bpm_temp = (int)(30 * (double)count_in / (double)(t_cur - t_start));
 	    if (verbose && (t_cur > t_start))
-	      printf (">>> current bpm after %d seconds and %d event(s) = %d\n", t_cur-t_start, count_in, bpm_temp);
+	      printf (">>> current bpm after %d seconds and %d event(s) = %d\n", (int)(t_cur-t_start), count_in, bpm_temp);
 	  }
 	}
 	// we have bpm already
@@ -538,7 +541,8 @@ int main(int ac, char **av)
       }
       else if (fdset[1].revents & POLLPRI) {
 	lseek(fdset[1].fd, 0, SEEK_SET);
-	len = read(fdset[1].fd, buf, MAX_BUF);
+	if (read(fdset[1].fd, buf, MAX_BUF) < 0)
+	  perror ("read / btn");
 
 	if (t_btn)
 	  t_btn_old = t_btn;
@@ -546,17 +550,18 @@ int main(int ac, char **av)
 	t_btn = time(0);
 
 	if (t_btn - t_btn_old < 2 || skip_btn_event) {
-	  //	  printf ("skipping btn event %d\n", t_btn-t_btn_old);
 	  skip_btn_event = 0;
 	}
 	else {
-	  if (timeout == MIN_POLL_TIMEOUT || timeout== MAX_POLL_TIMEOUT)
-	    timeout_inc = -timeout_inc /*MAX_POLL_TIMEOUT*/;
+	  if (bpm == MIN_BPM_IDLE || bpm_idle == MAX_BPM_IDLE)
+	    bpm_inc = -bpm_inc;
 
-	  timeout += timeout_inc;
+	  bpm_idle += bpm_inc;
 
+	  timeout = 30000/bpm_idle;
+	  
 	  if (verbose)
-	    printf ("new timeout= %d %d bpm\n", timeout, 30000/timeout);
+	    printf ("new bpm= %d timeout=%d\n", bpm_idle, timeout);
 	}
       }
     }
@@ -564,7 +569,6 @@ int main(int ac, char **av)
     fflush(stdout);
   }
 
- the_end:
   gpio_fd_close(gpio_fd);
   if (gpio_btn)
     gpio_fd_close (gpio_btn_fd);
