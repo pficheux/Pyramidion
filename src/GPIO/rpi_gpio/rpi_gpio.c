@@ -18,8 +18,14 @@
 #include <libgen.h>
 #include <string.h>
 
-#define BCM2708_PERI_BASE   0x20000000
-#define GPIO_BASE           (BCM2708_PERI_BASE + 0x200000) /* GPIO controler */
+// Pi 4
+//#define BCM_PERI_BASE 0xFE000000
+// Pi 3
+#define BCM_PERI_BASE   0x3F000000
+// Pi 1
+//#define BCM_PERI_BASE   0x20000000
+
+#define GPIO_BASE           (BCM_PERI_BASE + 0x200000) /* GPIO controler */
 
 #define PAGE_SIZE (4*1024)
 #define BLOCK_SIZE (4*1024)
@@ -27,14 +33,18 @@
 int  mem_fd;
 char *gpio_map;
 timer_t my_timer;
-int gpio_nr = 25; // default is GPIO #25
-unsigned long period = 5000000; // default is 5 ms
+int gpio_nr = 4; /* led */
+unsigned long period = 100000000; // default is 100 ms
+int quiet = 0;
+int ml = 0;
 
 unsigned long loop_prt;
 int test_loops = 0;             /* outer loop count */
 time_t t = 0, told = 0;
 int ntest = 0, ntest_max;
-int dry_run, verbose, quiet;
+
+
+#ifndef __x86_64__
 
 // I/O access
 volatile unsigned *gpio;
@@ -99,6 +109,8 @@ void setup_io()
   gpio = (volatile unsigned *)gpio_map;
 }
 
+#endif
+
 void got_sigint (int sig) 
 {
   printf ("Got SIGINT\n");
@@ -120,23 +132,22 @@ void got_sigalrm (int sig)
   told = t;
   clock_gettime (CLOCK_REALTIME, &tr);
   t = (tr.tv_sec * 1000000000) + tr.tv_nsec;    
-
-  if (!dry_run) {
-    if (test_loops % 2)
-      gpio_set (gpio_nr);
-    else
-      gpio_clr (gpio_nr);
-  }
-
+#ifndef __x86_64__
+  if (test_loops % 2)
+    gpio_set (gpio_nr);
+  else
+    gpio_clr (gpio_nr);
+#endif
   // Calculate jitter + display
   jitter = abs(t - told - period);
   jitter_avg += jitter;
   if (test_loops && (jitter > jitter_max))
     jitter_max = jitter;
   
-  if (!quiet && test_loops && (!(test_loops % loop_prt) || verbose)) {
+  if (test_loops && !(test_loops % loop_prt)) {
     jitter_avg /= loop_prt;
-    printf ("Loop= %d sec= %ld nsec= %ld delta= %ld ns jitter cur= %ld ns avg= %ld ns max= %ld ns\n", test_loops,  tr.tv_sec, tr.tv_nsec, t-told, jitter, jitter_avg, jitter_max);
+    if (!quiet)
+      printf ("Loop= %d sec= %ld nsec= %ld delta= %ld ns jitter cur= %ld ns avg= %ld ns max= %ld ns\n", test_loops,  tr.tv_sec, tr.tv_nsec, t-told, jitter, jitter_avg, jitter_max);
     jitter_avg = 0;
 
     if (++ntest == ntest_max) {
@@ -155,7 +166,7 @@ void got_sigalrm (int sig)
 
 void usage (char *s)
 {
-  fprintf (stderr, "Usage: %s [-p period (ns)] [-g gpio#] [-n loops] [-d] [-v]\n", s);
+  fprintf (stderr, "Usage: %s [-p period (ns)] [-g gpio#] [-m] [-n loops] [-q]\n", s);
   exit (1);
 }
 
@@ -179,17 +190,14 @@ int main(int ac, char **av)
       case 'p' :
 	period = (unsigned long)atoi(*++av); break;
 
+      case 'm' :
+	ml = 1; break;
+
       case 'n' :
 	ntest_max = (unsigned long)atoi(*++av); break;
 
-      case 'd' :
-	dry_run = 1; break;
-
       case 'q' :
 	quiet = 1; break;
-
-      case 'v' :
-	verbose = 1; break;
 
       default: 
 	usage(progname);
@@ -200,34 +208,33 @@ int main(int ac, char **av)
       break;
   }
 
+  if (ml) {
+    if (mlockall(MCL_CURRENT | MCL_FUTURE) < 0)
+      perror ("mlockall");
+    else
+      printf ("mlockall: OK !\n");
+  }
+
   // Display every 2 sec
   loop_prt = 2000000000 / period;
   
   printf ("Using GPIO %d and period %ld ns\n", gpio_nr, period);
-  if (dry_run)
-    printf ("** dry-run mode, no hardware access !! **\n");
-  if (verbose)
-    printf ("** verbose mode !! **\n");
+#ifndef __x86_64__
+  // Set up io pointer for direct register access
+  setup_io();
 
-  if (!dry_run) {
-    // Set up io pointer for direct register access
-    setup_io();
-
-    // Set GPIO  as output
-    OUT_GPIO(gpio_nr);
-  }
-
+  // Set GPIO  as output
+  OUT_GPIO(gpio_nr);
+#endif
   if (timer_create (CLOCK_REALTIME, NULL, &my_timer) < 0) {
     perror ("timer_create");
     exit (1);
   }
 
   its.it_value.tv_sec = 0;
-  its.it_value.tv_nsec = 50000000;
-  its.it_interval.tv_sec = period / 1000000000;
-  its.it_interval.tv_nsec = period % 1000000000;
-  //  its.it_interval.tv_sec = 0;
-  //  its.it_interval.tv_nsec = period;
+  its.it_value.tv_nsec = 1;
+  its.it_interval.tv_sec = 0;
+  its.it_interval.tv_nsec = period;
 
   if (timer_settime (my_timer, 0, &its, &its_old) < 0) {
     perror ("timer_settime");
@@ -238,4 +245,5 @@ int main(int ac, char **av)
     pause();
 
   return 0;
+
 }

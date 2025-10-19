@@ -1,6 +1,6 @@
-CFLAGS= -O2  #-DUSE_MOSQUITTO # -Wall
+CFLAGS= -O2 -Wall #-DUSE_MOSQUITTO # -Wall
 
-PROGS= gpioIrq gpio_test
+PROGS= gpioIrq gpioIrq_th gpio_test
 
 all: $(PROGS)
 
