@@ -21,8 +21,8 @@
 
 #define POLL_TIMEOUT 1000 /* 30 bpm = 60000/2/timeout */
 #define MIN_POLL_TIMEOUT 100
-#define MAX_POLL_TIMEOUT 2000
-#define TIMEOUT_INC      100
+#define MAX_POLL_TIMEOUT 1500
+#define TIMEOUT_INC      -50
 #define MAX_BUF 64
 
 
@@ -550,15 +550,13 @@ int main(int ac, char **av)
 	  skip_btn_event = 0;
 	}
 	else {
-	  if (timeout == MIN_POLL_TIMEOUT)
-	      timeout = MAX_POLL_TIMEOUT;
-	  else if (timeout == MAX_POLL_TIMEOUT)
-	      timeout = MIN_POLL_TIMEOUT;
+	  if (timeout == MIN_POLL_TIMEOUT || timeout== MAX_POLL_TIMEOUT)
+	    timeout_inc = -timeout_inc /*MAX_POLL_TIMEOUT*/;
 
-	  timeout -= 100;
+	  timeout += timeout_inc;
 
 	  if (verbose)
-	    printf ("new timeout= %d\n", timeout);
+	    printf ("new timeout= %d %d bpm\n", timeout, 30000/timeout);
 	}
       }
     }
