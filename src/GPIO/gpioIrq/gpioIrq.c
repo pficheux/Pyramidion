@@ -19,8 +19,8 @@
 
 #define DEFAULT_BPM_IDLE   30 /* bpm = 60000 / 2 / timeout */
 #define MIN_BPM_IDLE       20
-#define MAX_BPM_IDLE       200
-#define BPM_IDLE_INC       5   /* press the button -> bpm_idle +/- 5 bpm */
+#define MAX_BPM_IDLE       150
+#define BPM_IDLE_INC       10   /* press the button -> bpm_idle +/- 10 bpm */
 
 #define MAX_BUF 64
 
@@ -32,6 +32,22 @@ int count_in = 0;
 time_t t_btn, t_btn_old;
 int bpm_idle;
 int verbose;
+
+// SysTimestamp() emulation
+int64_t timespec_as_milliseconds(struct timespec ts)
+{
+    int64_t rv = ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    return rv;
+}
+
+int64_t sysTimestamp()
+{
+  struct timespec ts;
+
+  clock_gettime (CLOCK_REALTIME, &ts);
+
+  return timespec_as_milliseconds(ts);
+}
 
 #ifdef USE_MOSQUITTO
 
@@ -314,6 +330,7 @@ int main(int ac, char **av)
   int exit_v = 0;
   int skip_btn_event = 1;
   int bpm_inc = BPM_IDLE_INC;
+  int64_t ts_i = 0, ts_s = 0, ts_s_old = 0, ts_s_diff = 0;
 #ifdef USE_MOSQUITTO  
   int mqtt_err;
   char mqtt_msg[MAX_BUF];
@@ -426,33 +443,30 @@ int main(int ac, char **av)
       return -1;
 #endif      
     }
-    // timeout -> default blinking
-    else if (rc == 0) {
-      // default blinking
-#ifdef USE_MOSQUITTO	
-        mqtt_send ("30");
-#endif
-
-      if (verbose)
-	printf(".");
-
-      gpio_set_value (gpio_out, v_out);
-      v_out = (v_out == 0 ? 1 : 0);
-    }
     // rc > 0 => something happened on fds (sensor or button)
-    else {
+    else if (rc > 0) {
       // Sensor
       if (fdset[0].revents & POLLPRI) {
 	lseek(fdset[0].fd, 0, SEEK_SET);
 	if (read(fdset[0].fd, buf, MAX_BUF) < 0)
 	  perror ("read / sensor");
 
-	if (verbose)
-	  printf ("Copy sensor value %d to GPIO %d\n", v_out, gpio_out);
+	//told = t;
+	//	clock_gettime (CLOCK_REALTIME, &tr);
+	//	t = (tr.tv_sec * 1000000000) + tr.tv_nsec;    
+
+	ts_s_old = ts_s;
+	ts_s = sysTimestamp();
+	ts_s_diff = ts_s - ts_s_old;
+	
+	if (verbose) 
+	  printf ("Copy sensor value %d to GPIO %d (%lld)\n", v_out, gpio_out, ts_s_diff);
 	
 	// copy the value to GPIO/out
-	gpio_set_value (gpio_out, v_out);
-	v_out = (v_out == 0 ? 1 : 0);
+	if (ts_s_diff > 20) {
+	  gpio_set_value (gpio_out, v_out);
+	  v_out = (v_out == 0 ? 1 : 0);
+	}
       }
       // Button
       else if (fdset[1].revents & POLLPRI) {
@@ -481,6 +495,29 @@ int main(int ac, char **av)
 	}
       }
     }
+    // timeout -> default blinking
+    else {
+      // default blinking
+#ifdef USE_MOSQUITTO	
+        mqtt_send ("30");
+#endif
+
+	ts_i = sysTimestamp();
+
+	if (ts_s_diff < 20 || (ts_i - ts_s > 3000)) {
+	  if (verbose)
+	    printf ("Idle activated (%lld) !\n", ts_i-ts_s);
+
+	  gpio_set_value (gpio_out, v_out);
+	  v_out = (v_out == 0 ? 1 : 0);
+	}
+	else {
+	  if (verbose)
+	    printf ("Idle ignored (%lld) !\n", ts_i-ts_s);
+	}
+	  
+    }
+
 
     fflush(stdout);
   }
